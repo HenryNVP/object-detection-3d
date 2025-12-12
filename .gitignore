@@ -1,1 +1,104 @@
-*.md
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Model Checkpoints & Weights
+*.pth
+*.pth.tar
+*.ckpt
+*.pt
+*.h5
+*.weights
+modelzoo/
+checkpoints/
+models/
+
+# Results & Outputs
+results/
+results_*/
+inference_results/
+demo/results/
+*.ply
+*.pcd
+*.bin
+*.png
+*.jpg
+*.jpeg
+*.json
+!package.json
+!tsconfig.json
+*.mp4
+
+# Data directories
+data/
+datasets/
+sample_data/
+*.data
+*.data-*
+
+# Logs
+*.log
+logs/
+wandb/
+tensorboard/
+runs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# MMDetection3D specific
+work_dirs/
+tools/work_dirs/
+*.pkl
+*.pickle
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+.cache/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Documentation (if you want to ignore markdown files)
+# *.md
