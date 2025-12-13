@@ -2,6 +2,8 @@
 
 This repository contains scripts for running 3D object detection inference on KITTI and nuScenes datasets using MMDetection3D models.
 
+View the demo images and videos [here](https://drive.google.com/drive/folders/1LiejW3UdqJp7DUHIKjqOU4D3ugv97MaQ?usp=sharing).
+
 ## Setup
 
 ### 1. Environment Setup

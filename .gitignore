@@ -48,6 +48,7 @@ models/
 
 # Results & Outputs
 results/
+results_combined/
 results_*/
 inference_results/
 demo/results/
