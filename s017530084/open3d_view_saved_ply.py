@@ -29,10 +29,12 @@ try:
     import matplotlib
     matplotlib.use('Agg')  # Use non-interactive backend
     import matplotlib.pyplot as plt
+    import matplotlib.cm as cm
     from mpl_toolkits.mplot3d import Axes3D
     MATPLOTLIB_AVAILABLE = True
 except ImportError:
     MATPLOTLIB_AVAILABLE = False
+    cm = None
 
 
 def load_if_exists(path: str, loader, name: str):
@@ -49,7 +51,7 @@ def load_if_exists(path: str, loader, name: str):
     return None
 
 
-def visualize_with_matplotlib(geoms, labels, output_path):
+def visualize_with_matplotlib(geoms, labels, output_path, label_info=None):
     """Fallback visualization using matplotlib (no X11/OpenGL required)."""
     if not MATPLOTLIB_AVAILABLE:
         raise RuntimeError("matplotlib is not available for fallback visualization")
@@ -65,6 +67,16 @@ def visualize_with_matplotlib(geoms, labels, output_path):
     ]
     
     all_points = []
+    box_centers = []  # Store box centers for label placement
+    box_labels_text = []  # Store label text for each box
+    
+    # Track which geometry is predictions (should be the LineSet)
+    pred_geom_idx = None
+    for idx, geom in enumerate(geoms):
+        if isinstance(geom, o3d.geometry.LineSet):
+            pred_geom_idx = idx
+            break
+    
     for idx, (geom, label) in enumerate(zip(geoms, labels)):
         if isinstance(geom, o3d.geometry.PointCloud):
             points = np.asarray(geom.points)
@@ -73,15 +85,17 @@ def visualize_with_matplotlib(geoms, labels, output_path):
             
             all_points.append(points)
             
-            # Get colors if available
+            # Get colors if available (points are colored by height)
             if geom.has_colors():
                 colors = np.asarray(geom.colors)
+                # Reduce point size/weight: s=0.3 instead of s=1, alpha=0.4 instead of 0.6
                 ax.scatter(points[:, 0], points[:, 1], points[:, 2], 
-                          c=colors, s=1, alpha=0.6, label=label)
+                          c=colors, s=0.3, alpha=0.4, label=label)
             else:
                 color = default_colors[idx % len(default_colors)]
+                # Reduce point size/weight
                 ax.scatter(points[:, 0], points[:, 1], points[:, 2], 
-                          c=[color], s=1, alpha=0.6, label=label)
+                          c=[color], s=0.3, alpha=0.4, label=label)
         
         elif isinstance(geom, o3d.geometry.LineSet):
             # Draw 3D bounding boxes as wireframes
@@ -109,15 +123,45 @@ def visualize_with_matplotlib(geoms, labels, output_path):
             else:
                 line_color = color
             
-            # Draw all lines with the determined color
+            # Draw all lines with the determined color - make them thicker and more visible
             for i, line in enumerate(lines):
                 p1, p2 = points[line[0]], points[line[1]]
                 ax.plot3D([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]], 
-                         color=line_color, linewidth=1, alpha=1.0, 
+                         color=line_color, linewidth=2.5, alpha=1.0, 
                          label=label if i == 0 else "")
+            
+            # Store box centers for label placement (every 8 points = 1 box)
+            # Check if this is predictions LineSet
+            is_predictions = (pred_geom_idx is not None and idx == pred_geom_idx) or (label and "Predictions" in label)
+            if label_info and 'pred_boxes' in label_info and is_predictions:
+                boxes = np.array(label_info['pred_boxes'])
+                pred_labels = label_info.get('pred_labels', [])
+                pred_scores = label_info.get('pred_scores', [])
+                class_names = label_info.get('class_names', [])
+                
+                for box_idx, box in enumerate(boxes):
+                    # Box format: [x, y, z_bottom, dx, dy, dz, yaw]
+                    box_centers.append([box[0], box[1], box[2] + box[5]/2])  # z_center = z_bottom + height/2
+                    # Build label text
+                    label_text = ""
+                    if box_idx < len(pred_labels) and class_names:
+                        label_idx = pred_labels[box_idx]
+                        if 0 <= label_idx < len(class_names):
+                            label_text = class_names[label_idx]
+                    if box_idx < len(pred_scores):
+                        score = pred_scores[box_idx]
+                        label_text += f" {score:.2f}"
+                    box_labels_text.append(label_text)
     
     if not all_points:
         raise RuntimeError("No valid point clouds to visualize")
+    
+    # Add text labels for bounding boxes
+    for center, text in zip(box_centers, box_labels_text):
+        if text:
+            ax.text(center[0], center[1], center[2], text, 
+                   fontsize=8, color='red', weight='bold',
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7))
     
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
@@ -192,18 +236,65 @@ def main():
     for index in indices:
         points_path = os.path.join(base_dir, f"{index}_points.ply")
         pred_path = os.path.join(base_dir, f"{index}_pred.ply")
+        label_path = os.path.join(base_dir, f"{index}_labels.json")
 
         geoms = []
         pcd_points = None
         ls_pred = None
         pcd_pred = None
+        label_info = None
+        
+        # Load label information if available
+        if os.path.exists(label_path):
+            try:
+                import json
+                with open(label_path, 'r') as f:
+                    label_info = json.load(f)
+                # Add default class names if missing
+                if 'class_names' not in label_info or not label_info['class_names']:
+                    # Try to detect dataset from directory name or use KITTI as default
+                    # KITTI 3-class: ['Pedestrian', 'Cyclist', 'Car']
+                    # nuScenes 10-class: ['car', 'truck', 'trailer', 'bus', 'construction_vehicle', 'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone', 'barrier']
+                    dir_lower = base_dir.lower()
+                    if 'kitti' in dir_lower:
+                        # KITTI 3-class order (matches mmdet3d config)
+                        label_info['class_names'] = ['Pedestrian', 'Cyclist', 'Car']
+                        print(f"  Using default KITTI class names: {label_info['class_names']}")
+                    else:
+                        # Default to nuScenes 10-class order
+                        label_info['class_names'] = [
+                            'car', 'truck', 'trailer', 'bus', 'construction_vehicle',
+                            'bicycle', 'motorcycle', 'pedestrian', 'traffic_cone', 'barrier'
+                        ]
+                        print(f"  Using default nuScenes class names")
+                print(f"  Loaded label information from {label_path}")
+            except Exception as e:
+                print(f"  [WARN] Failed to load label info: {e}")
+                label_info = None
 
         # Load point cloud
         pcd_points = load_if_exists(points_path, o3d.io.read_point_cloud, "Point cloud")
         if pcd_points is not None:
-            # Color point cloud gray if no colors
+            # Color point cloud by height (z coordinate) if no colors
             if not pcd_points.has_colors():
-                pcd_points.paint_uniform_color([0.5, 0.5, 0.5])
+                points = np.asarray(pcd_points.points)
+                if len(points) > 0:
+                    z_coords = points[:, 2]
+                    z_min, z_max = z_coords.min(), z_coords.max()
+                    if z_max > z_min:
+                        z_norm = (z_coords - z_min) / (z_max - z_min)
+                    else:
+                        z_norm = np.zeros_like(z_coords)
+                    
+                    # Use a colormap (viridis: blue=low, green=mid, yellow=high)
+                    if cm is None:
+                        import matplotlib.cm as cm
+                    colormap = cm.get_cmap('viridis')
+                    colors = colormap(z_norm)[:, :3]  # RGB in [0, 1]
+                    pcd_points.colors = o3d.utility.Vector3dVector(colors)
+                    print(f"  Colored {len(points)} points by height (z: {z_min:.2f} to {z_max:.2f})")
+                else:
+                    pcd_points.paint_uniform_color([0.5, 0.5, 0.5])
             geoms.append(pcd_points)
             print(f"  Loaded {len(pcd_points.points)} points")
 
@@ -212,8 +303,8 @@ def main():
         if ls_pred is not None:
             # Force bright red color for predictions to make them clearly visible
             ls_pred.paint_uniform_color([1.0, 0.0, 0.0])
-            if args.compare or pcd_points is None:
-                geoms.append(ls_pred)
+            # Always add predictions to visualization
+            geoms.append(ls_pred)
             print(f"  Loaded {len(ls_pred.points)} box corners, {len(ls_pred.lines)} edges ({len(ls_pred.points)//8} boxes)")
         else:
             # Fallback: try as point cloud
@@ -284,10 +375,9 @@ def main():
                     if pcd_points:
                         labels.append("Point Cloud")
                     if ls_pred is not None or pcd_pred is not None:
-                        if args.compare or not pcd_points:
-                            labels.append("Predictions")
+                        labels.append("Predictions")
                     
-                    visualize_with_matplotlib(geoms, labels, save_image)
+                    visualize_with_matplotlib(geoms, labels, save_image, label_info=label_info)
                 except Exception as e2:
                     print(f"\n[ERROR] Matplotlib fallback also failed: {e2}")
                     print("[INFO] Options:")
@@ -324,10 +414,9 @@ def main():
                     if pcd_points:
                         labels.append("Point Cloud")
                     if ls_pred is not None or pcd_pred is not None:
-                        if args.compare or not pcd_points:
-                            labels.append("Predictions")
+                        labels.append("Predictions")
                     
-                    visualize_with_matplotlib(geoms, labels, auto_save_path)
+                    visualize_with_matplotlib(geoms, labels, auto_save_path, label_info=label_info)
                 except Exception as e2:
                     print(f"\n[ERROR] Matplotlib fallback also failed: {e2}")
                     print("[INFO] Try using --headless or --save-image <filename>")

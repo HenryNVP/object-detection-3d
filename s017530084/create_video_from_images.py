@@ -31,8 +31,8 @@ def get_image_files(directory, pattern="*_visualization.png"):
     image_files = sorted(dir_path.glob(pattern), key=lambda p: natural_sort_key(p.name))
     
     if not image_files:
-        # Try alternative patterns
-        alt_patterns = ["*.png", "*.jpg", "*.jpeg"]
+        # Try alternative patterns (KITTI uses *_multiview.jpg, nuScenes uses *_visualization.png)
+        alt_patterns = ["*_multiview.jpg", "*_multiview.jpeg", "*.png", "*.jpg", "*.jpeg"]
         for alt_pattern in alt_patterns:
             image_files = sorted(dir_path.glob(alt_pattern), key=lambda p: natural_sort_key(p.name))
             if image_files:

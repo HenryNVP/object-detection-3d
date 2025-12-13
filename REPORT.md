@@ -2,7 +2,8 @@
 
 ## A. Setup
 
-**Environment:** Lab Server
+**Environment:** EDGEAISERVER Lab Server ~/cmpe276_3d_detection/ , GPU Tesla P100-PCIE-12GB
+**Dataset**: KITTI (50 samples) and NuScenes (914 samples, key frames)
 
 ### 1. Create Environment
 
@@ -73,8 +74,36 @@ Checkpoints:
 
 #### Run Benchmarks
 
-**PointPillars on KITTI:**
+**General Command:**
 
+```bash
+python simple_infer_main.py \
+  --config <CONFIG_FILE> \
+  --checkpoint <CHECKPOINT_FILE> \
+  --dataroot <DATA_ROOT> \
+  --ann-file <ANNOTATION_FILE> \
+  --out-dir <OUTPUT_DIR> \
+  --dataset <DATASET> \
+  --data-source cfg \
+  --eval \
+  [--eval-backend manual]  # Optional: for nuScenes manual evaluation
+```
+
+**KITTI Models:**
+
+| Model | Config | Checkpoint |
+|-------|--------|------------|
+| **PointPillars** | `mmdetection3d/configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py` | `mmdetection3d/checkpoints/hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_20220301_150306-37dc2420.pth` |
+| **Second** | `mmdetection3d/configs/second/second_hv_secfpn_8xb6-amp-80e_kitti-3d-3class.py` | `mmdetection3d/checkpoints/hv_second_secfpn_fp16_6x8_80e_kitti-3d-3class_20200925_110059-05f67bdf.pth` |
+
+**nuScenes Models:**
+
+| Model | Config | Checkpoint |
+|-------|--------|------------|
+| **PointPillars** | `pointpillars_hv_secfpn_sbn-all_8xb2-amp-2x_nus-3d-no-sweeps.py` | `mmdetection3d/checkpoints/hv_pointpillars_secfpn_sbn-all_fp16_2x8_2x_nus-3d_20201020_222626-c3f0483e.pth` |
+| **CenterPoint** | `centerpoint_voxel01_second_secfpn_head-circlenms_8xb4-cyclic-20e_nus-3d-no-sweeps.py` | `mmdetection3d/checkpoints/centerpoint_01voxel_second_secfpn_circlenms_4x8_cyclic_20e_nus_20220810_030004-9061688e.pth` |
+
+**Example for KITTI:**
 ```bash
 python simple_infer_main.py \
   --config mmdetection3d/configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py \
@@ -87,33 +116,17 @@ python simple_infer_main.py \
   --eval
 ```
 
-**Second on KITTI:**
-
+**Example for nuScenes:**
 ```bash
 python simple_infer_main.py \
-  --config mmdetection3d/configs/second/second_hv_secfpn_8xb6-amp-80e_kitti-3d-3class.py \
-  --checkpoint mmdetection3d/checkpoints/hv_second_secfpn_fp16_6x8_80e_kitti-3d-3class_20200925_110059-05f67bdf.pth \
-  --dataroot /home/student/cmpe276_3d_detection/data/kitti \
-  --ann-file /home/student/cmpe276_3d_detection/data/kitti/kitti_infos_val.pkl \
-  --out-dir ./results_kitti_second \
-  --dataset kitti \
-  --data-source cfg \
-  --eval
-```
-
-**CenterPoint on nuScenes:**
-
-```bash
-python simple_infer_main.py \
-  --config centerpoint_voxel01_second_secfpn_head-circlenms_8xb4-cyclic-20e_nus-3d-no-sweeps.py \
-  --checkpoint mmdetection3d/checkpoints/centerpoint_01voxel_second_secfpn_circlenms_4x8_cyclic_20e_nus_20220810_030004-9061688e.pth \
+  --config pointpillars_hv_secfpn_sbn-all_8xb2-amp-2x_nus-3d-no-sweeps.py \
+  --checkpoint mmdetection3d/checkpoints/hv_pointpillars_secfpn_sbn-all_fp16_2x8_2x_nus-3d_20201020_222626-c3f0483e.pth \
   --dataroot /home/student/cmpe276_3d_detection/data/nuscenes \
   --ann-file /home/student/cmpe276_3d_detection/data/nuscenes/nuscenes_infos_val.pkl \
-  --out-dir ./results_nuscenes_centerpoint \
+  --out-dir ./results_nuscenes_pointpillars \
   --dataset nuscenes \
   --data-source cfg \
-  --eval \
-  --eval-backend manual
+  --eval 
 ```
 
 ## B. Key Modifications to Inference Pipeline
@@ -162,88 +175,39 @@ Enhanced `patch_cfg_paths()` with intelligent path resolution using multiple fal
 - **MMDetection3D Version**: 1.4.0
 - **PyTorch Version**: 2.1.2
 
-### Performance Summary
+### Inference Performance Metrics
 
-| Model        | Dataset   | Latency (ms)        | Memory (MB) | Samples | Score Threshold |
-|--------------|-----------|---------------------|------------|---------|------------------|
-| PointPillars | KITTI     | 113.14 ± 459.14     | 8,475.56   | 50      | 0.05             |
-| Second       | KITTI     | 108.97 ± 233.11     | 3,464.23   | 50      | 0.05             |
-| CenterPoint  | nuScenes  | 122.31 ± 208.41     | 4,251.80   | 914     | 0.05             |
+| Model        | Dataset   | Latency Mean (ms) | Latency Std (ms) | Latency Min (ms) | Latency Max (ms) | GPU Memory Peak (MB) | Samples |
+|--------------|-----------|-------------------|------------------|------------------|------------------|----------------------|---------|
+| PointPillars | KITTI     | 113.14            | 459.14           | 42.11            | 3,327.05         | 8,475.56             | 50      |
+| Second       | KITTI     | 108.97            | 233.11           | 69.43            | 1,740.65         | 3,464.23             | 50      |
+| PointPillars | nuScenes  | 82.80             | 97.31            | 68.86            | 3,018.61         | 8,452.76             | 914     |
+| CenterPoint  | nuScenes  | 122.31            | 208.41           | 105.95           | 6,418.95         | 4,251.80             | 914     |
 
-### Detailed Results
+### Key Observations
 
-#### 1. KITTI - PointPillars
+1. **Latency Performance**:
+   - **Fastest**: PointPillars on nuScenes (82.80 ms mean)
+   - **Most Consistent**: Second on KITTI (std: 233.11 ms)
+   - **Highest Variance**: PointPillars on KITTI (std: 459.14 ms)
+   - All models achieve sub-150ms average inference time, suitable for real-time applications
 
-- **Config**: `pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py`
-- **Checkpoint**: `hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_20220301_150306-37dc2420.pth`
-- **Latency**: 
-  - Mean: 113.14 ms
-  - Min: 42.11 ms
-  - Max: 3,327.05 ms
-  - Std: 459.14 ms
-- **Memory**: Peak: 8,475.56 MB
-- **Per-Class Detections**:
-  - Car: 284
-  - Pedestrian: 208
-  - Cyclist: 101
-  - **Total**: 593
+2. **GPU Memory Usage**:
+   - **Most Efficient**: Second (3,464 MB)
+   - **Highest Usage**: PointPillars (~8,450 MB on both datasets)
+   - **Moderate**: CenterPoint (4,252 MB)
+   - PointPillars requires approximately 2.4× more memory than Second
 
-#### 2. KITTI - Second
-
-- **Config**: `second_hv_secfpn_8xb6-amp-80e_kitti-3d-3class.py`
-- **Checkpoint**: `hv_second_secfpn_fp16_6x8_80e_kitti-3d-3class_20200925_110059-05f67bdf.pth`
-- **Latency**: 
-  - Mean: 108.97 ms
-  - Min: 69.43 ms
-  - Max: 1,740.65 ms
-  - Std: 233.11 ms
-- **Memory**: Peak: 3,464.23 MB
-- **Per-Class Detections**:
-  - Car: 226
-  - Pedestrian: 124
-  - Cyclist: 72
-  - **Total**: 422
-
-#### 3. nuScenes - CenterPoint
-
-- **Config**: `centerpoint_voxel01_second_secfpn_head-circlenms_8xb4-cyclic-20e_nus-3d-no-sweeps.py`
-- **Checkpoint**: `centerpoint_01voxel_second_secfpn_circlenms_4x8_cyclic_20e_nus_20220810_030004-9061688e.pth`
-- **Latency**: 
-  - Mean: 122.31 ms
-  - Min: 105.95 ms
-  - Max: 6,418.95 ms
-  - Std: 208.41 ms
-- **Memory**: Peak: 4,251.80 MB
-- **Evaluation Metrics**:
-  - NDS: 0.0000
-  - mAP: 0.0000
-- **Note**: Evaluation completed successfully but metrics are 0.0000, which may indicate model performance issues or prediction format mismatches.
+3. **Throughput**:
+   - PointPillars on KITTI: ~9 FPS
+   - PointPillars on nuScenes: ~12 FPS
+   - Second on KITTI: ~9 FPS
+   - CenterPoint on nuScenes: ~8 FPS
 
 ### Benchmark JSON Files
 
-All benchmark results are saved in JSON format:
-
-- `results_kitti_pointpillars/benchmark_kitti.json` - PointPillars KITTI results
-- `results_kitti_second/benchmark_kitti.json` - Second KITTI results
-- `results_nuscenes_centerpoint/benchmark_nuscenes.json` - CenterPoint nuScenes results
-- `benchmark_results_aggregated.json` - Aggregated summary of all benchmarks
-
-### Observations
-
-1. **Latency Performance**: 
-   - Second model shows the most consistent performance with the lowest standard deviation (233.11 ms)
-   - PointPillars has higher variance (459.14 ms), indicating less predictable inference times
-   - All models achieve sub-150ms average inference time, suitable for real-time applications
-
-2. **Memory Efficiency**: 
-   - Second model is the most memory-efficient (3,464 MB)
-   - PointPillars requires the most memory (8,475 MB), approximately 2.4× more than Second
-   - CenterPoint uses moderate memory (4,252 MB)
-
-3. **Detection Performance**: 
-   - PointPillars detects more objects overall (593 total) compared to Second (422 total) on the same KITTI samples
-   - This suggests PointPillars may have higher recall but potentially lower precision
-
-4. **Dataset Comparison**: 
-   - KITTI benchmarks used 50 samples for evaluation
-   - nuScenes benchmark used 914 samples, providing more comprehensive evaluation
+All inference metrics are saved in JSON format:
+- `results_kitti_pointpillars/benchmark_kitti.json`
+- `results_kitti_second/benchmark_kitti.json`
+- `results_nuscenes_pointpillars/benchmark_nuscenes.json`
+- `results_nuscenes_centerpoint/benchmark_nuscenes.json`

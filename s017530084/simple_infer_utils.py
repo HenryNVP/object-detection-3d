@@ -319,17 +319,39 @@ def save_ply_files(out_dir: str,
                    token: str,
                    pts: np.ndarray,
                    pred_boxes: Optional[np.ndarray],
-                   gt_boxes: Optional[np.ndarray]) -> None:
+                   gt_boxes: Optional[np.ndarray],
+                   pred_labels: Optional[np.ndarray] = None,
+                   pred_scores: Optional[np.ndarray] = None,
+                   gt_labels: Optional[np.ndarray] = None,
+                   class_names: Optional[Sequence[str]] = None) -> None:
     """
     Save point cloud and predicted / GT box wireframes as PLY files.
+    Also saves label information in JSON format for visualization.
 
     Useful for headless 3D inspection with Open3D or Meshlab.
     """
     if not HAS_OPEN3D:
         return
 
+    # Color points by height (z coordinate) instead of uniform color
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts[:, :3])
+    
+    # Color by height: normalize z coordinates to [0, 1] and apply colormap
+    if len(pts) > 0:
+        z_coords = pts[:, 2]
+        z_min, z_max = z_coords.min(), z_coords.max()
+        if z_max > z_min:
+            z_norm = (z_coords - z_min) / (z_max - z_min)
+        else:
+            z_norm = np.zeros_like(z_coords)
+        
+        # Use a colormap (blue=low, green=mid, red=high)
+        import matplotlib.cm as cm
+        colormap = cm.get_cmap('viridis')  # or 'jet', 'plasma', etc.
+        colors = colormap(z_norm)[:, :3]  # RGB in [0, 1]
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+    
     o3d.io.write_point_cloud(osp.join(out_dir, f"{token}_points.ply"), pcd)
 
     ls_pred = boxes_to_lineset(pred_boxes, [0, 1, 0])
@@ -339,6 +361,26 @@ def save_ply_files(out_dir: str,
     ls_gt = boxes_to_lineset(gt_boxes, [1, 0, 0])
     if ls_gt is not None:
         o3d.io.write_line_set(osp.join(out_dir, f"{token}_gt.ply"), ls_gt)
+    
+    # Save label information to JSON
+    label_info = {}
+    if pred_boxes is not None:
+        label_info['pred_boxes'] = pred_boxes.tolist() if isinstance(pred_boxes, np.ndarray) else pred_boxes
+        if pred_labels is not None:
+            label_info['pred_labels'] = pred_labels.tolist() if isinstance(pred_labels, np.ndarray) else pred_labels.tolist()
+        if pred_scores is not None:
+            label_info['pred_scores'] = pred_scores.tolist() if isinstance(pred_scores, np.ndarray) else pred_scores.tolist()
+    if gt_boxes is not None:
+        label_info['gt_boxes'] = gt_boxes.tolist() if isinstance(gt_boxes, np.ndarray) else gt_boxes
+        if gt_labels is not None:
+            label_info['gt_labels'] = gt_labels.tolist() if isinstance(gt_labels, np.ndarray) else gt_labels.tolist()
+    if class_names is not None:
+        label_info['class_names'] = list(class_names)
+    
+    if label_info:
+        import json
+        with open(osp.join(out_dir, f"{token}_labels.json"), 'w') as f:
+            json.dump(label_info, f, indent=2)
 
 
 def run_open3d_viz(pts: np.ndarray,
@@ -393,7 +435,11 @@ def draw_2d_multiview(paths: List[str],
                       token: str,
                       out_dir: str,
                       target_size: Tuple[int, int] = (256, 704),
-                      scale: float = 0.48) -> None:
+                      scale: float = 0.48,
+                      pred_labels: Optional[np.ndarray] = None,
+                      pred_scores: Optional[np.ndarray] = None,
+                      gt_labels: Optional[np.ndarray] = None,
+                      class_names: Optional[Sequence[str]] = None) -> None:
     """
     Render multi-view 2D images with lidar point projections and 3D boxes.
 
@@ -407,6 +453,10 @@ def draw_2d_multiview(paths: List[str],
         out_dir:    directory to save the resulting image
         target_size: (H, W) after crop (must match what model expects)
         scale:      resize scale factor applied before crop
+        pred_labels: (M,) optional class indices for predictions.
+        pred_scores: (M,) optional confidence scores for predictions.
+        gt_labels:   (K,) optional class indices for ground truth.
+        class_names: list of class name strings for label display.
     """
     if not paths:
         return
@@ -441,10 +491,12 @@ def draw_2d_multiview(paths: List[str],
                 if 0 <= x < w_img and 0 <= y < h_img:
                     img[y, x] = cols[j]
 
-        def draw_boxes(boxes: Optional[np.ndarray], color: Tuple[int, int, int]):
+        def draw_boxes(boxes: Optional[np.ndarray], color: Tuple[int, int, int], 
+                       labels: Optional[np.ndarray] = None, scores: Optional[np.ndarray] = None,
+                       label_prefix: str = ""):
             if boxes is None:
                 return
-            for b in boxes:
+            for idx, b in enumerate(boxes):
                 if len(b) < 7:
                     continue
                 x, y, zb, dx, dy, dz, yaw = b[:7]
@@ -470,9 +522,52 @@ def draw_2d_multiview(paths: List[str],
                     p1 = tuple(uv_b[u])
                     p2 = tuple(uv_b[v])
                     cv2.line(img, p1, p2, color, 2, cv2.LINE_AA)
+                
+                # Add label text at the top of the box
+                if len(uv_b) >= 4:
+                    # Use top face corners (indices 0, 1, 2, 3) to find top center
+                    top_corners = uv_b[:4]
+                    top_center = top_corners.mean(axis=0).astype(int)
+                    top_y = int(top_corners[:, 1].min())
+                    
+                    # Build label text
+                    label_text = label_prefix
+                    if labels is not None and idx < len(labels):
+                        label_idx = int(labels[idx])
+                        if class_names is not None and 0 <= label_idx < len(class_names):
+                            label_text += class_names[label_idx]
+                        else:
+                            label_text += f"Class{label_idx}"
+                    if scores is not None and idx < len(scores):
+                        score_val = float(scores[idx])
+                        label_text += f" {score_val:.2f}"
+                    
+                    if label_text:
+                        # Draw text background for better visibility
+                        (text_w, text_h), baseline = cv2.getTextSize(
+                            label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                        )
+                        cv2.rectangle(
+                            img,
+                            (top_center[0] - text_w // 2 - 2, top_y - text_h - baseline - 2),
+                            (top_center[0] + text_w // 2 + 2, top_y + baseline + 2),
+                            (0, 0, 0),
+                            -1
+                        )
+                        # Draw text
+                        cv2.putText(
+                            img,
+                            label_text,
+                            (top_center[0] - text_w // 2, top_y),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            color,
+                            1,
+                            cv2.LINE_AA
+                        )
 
-        draw_boxes(gt_boxes, (0, 0, 255))   # red
-        draw_boxes(pred_boxes, (0, 255, 0)) # green
+        draw_boxes(gt_boxes, (0, 0, 255), gt_labels, None, "GT: ")   # red
+        draw_boxes(pred_boxes, (0, 255, 0), pred_labels, pred_scores, "") # green
         canvases.append(img)
 
     if len(canvases) == 6:
@@ -494,6 +589,10 @@ def draw_2d_multiview_from_tensor(
     gt_boxes,
     token,
     out_dir,
+    pred_labels=None,
+    pred_scores=None,
+    gt_labels=None,
+    class_names=None,
 ):
     """
     Draw multiview projection using the **already preprocessed** images from
@@ -515,6 +614,10 @@ def draw_2d_multiview_from_tensor(
         gt_boxes:    (G, 7) GT boxes in lidar frame or None.
         token:       string id for saving.
         out_dir:     directory to write <token>_multiview.jpg.
+        pred_labels: (K,) optional class indices for predictions.
+        pred_scores: (K,) optional confidence scores for predictions.
+        gt_labels:   (G,) optional class indices for ground truth.
+        class_names: list of class name strings for label display.
     """
     if imgs_tensor is None:
         return
@@ -558,11 +661,11 @@ def draw_2d_multiview_from_tensor(
                 if 0 <= x < w_img and 0 <= y < h_img:
                     img[y, x] = cols[j]
 
-        # Inner helper to draw 3D boxes in this view
-        def draw_b(boxes, c):
+        # Inner helper to draw 3D boxes in this view with labels
+        def draw_b(boxes, c, labels=None, scores=None, label_prefix=""):
             if boxes is None:
                 return
-            for b in boxes:
+            for idx, b in enumerate(boxes):
                 if len(b) < 7:
                     continue
                 x, y, zb, dx, dy, dz, yaw = b[:7]
@@ -586,10 +689,53 @@ def draw_2d_multiview_from_tensor(
                     p1 = tuple(uv_b[u].astype(int))
                     p2 = tuple(uv_b[v].astype(int))
                     cv2.line(img, p1, p2, c, 2, cv2.LINE_AA)
+                
+                # Add label text at the top of the box
+                if len(uv_b) >= 4:
+                    # Use top face corners (indices 0, 1, 2, 3) to find top center
+                    top_corners = uv_b[:4]
+                    top_center = top_corners.mean(axis=0).astype(int)
+                    top_y = int(top_corners[:, 1].min())
+                    
+                    # Build label text
+                    label_text = label_prefix
+                    if labels is not None and idx < len(labels):
+                        label_idx = int(labels[idx])
+                        if class_names is not None and 0 <= label_idx < len(class_names):
+                            label_text += class_names[label_idx]
+                        else:
+                            label_text += f"Class{label_idx}"
+                    if scores is not None and idx < len(scores):
+                        score_val = float(scores[idx])
+                        label_text += f" {score_val:.2f}"
+                    
+                    if label_text:
+                        # Draw text background for better visibility
+                        (text_w, text_h), baseline = cv2.getTextSize(
+                            label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+                        )
+                        cv2.rectangle(
+                            img,
+                            (top_center[0] - text_w // 2 - 2, top_y - text_h - baseline - 2),
+                            (top_center[0] + text_w // 2 + 2, top_y + baseline + 2),
+                            (0, 0, 0),
+                            -1
+                        )
+                        # Draw text
+                        cv2.putText(
+                            img,
+                            label_text,
+                            (top_center[0] - text_w // 2, top_y),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            c,
+                            1,
+                            cv2.LINE_AA
+                        )
 
         # GT: red, Pred: green
-        draw_b(gt_boxes, (0, 0, 255))
-        draw_b(pred_boxes, (0, 255, 0))
+        draw_b(gt_boxes, (0, 0, 255), gt_labels, None, "GT: ")
+        draw_b(pred_boxes, (0, 255, 0), pred_labels, pred_scores, "")
 
         canvases.append(img)
 
@@ -1776,6 +1922,10 @@ def _maybe_save_multiview(
     pts_np: np.ndarray,
     pred_boxes_np: np.ndarray,
     gt_boxes_np: np.ndarray,
+    pred_labels_np: Optional[np.ndarray] = None,
+    pred_scores_np: Optional[np.ndarray] = None,
+    gt_labels_np: Optional[np.ndarray] = None,
+    class_names: Optional[Sequence[str]] = None,
 ) -> None:
     """
     Save multiview images (lidar projection + GT/pred boxes) if possible.
@@ -1806,6 +1956,10 @@ def _maybe_save_multiview(
             gt_boxes=gt_boxes_np,
             token=str(token),
             out_dir=out_vis_dir,
+            pred_labels=pred_labels_np,
+            pred_scores=pred_scores_np,
+            gt_labels=gt_labels_np,
+            class_names=class_names,
         )
     except Exception as e:
         warnings.warn(f"[run_manual_benchmark] draw_2d_multiview_from_tensor failed: {e}")
@@ -1932,6 +2086,14 @@ def run_manual_benchmark(
                 pred.bboxes_3d.tensor[mask].detach().cpu().numpy()
                 if hasattr(pred, 'bboxes_3d') else None
             )
+            pred_labels_np = (
+                pred.labels_3d[mask].detach().cpu().numpy()
+                if hasattr(pred, 'labels_3d') else None
+            )
+            pred_scores_np = (
+                pred.scores_3d[mask].detach().cpu().numpy()
+                if hasattr(pred, 'scores_3d') else None
+            )
             _maybe_save_multiview(
                 dataset="kitti",
                 out_dir=out_dir,
@@ -1941,6 +2103,10 @@ def run_manual_benchmark(
                 pts_np=pts_np,
                 pred_boxes_np=pred_boxes_np,
                 gt_boxes_np=gt_boxes_np,
+                pred_labels_np=pred_labels_np,
+                pred_scores_np=pred_scores_np,
+                gt_labels_np=gt_labels_np,
+                class_names=class_names,
             )
 
         # Aggregate performance stats
@@ -2075,6 +2241,14 @@ def run_manual_benchmark(
             pred.bboxes_3d.tensor[mask].detach().cpu().numpy()
             if hasattr(pred, 'bboxes_3d') else None
         )
+        pred_labels_np = (
+            pred.labels_3d[mask].detach().cpu().numpy()
+            if hasattr(pred, 'labels_3d') else None
+        )
+        pred_scores_np = (
+            pred.scores_3d[mask].detach().cpu().numpy()
+            if hasattr(pred, 'scores_3d') else None
+        )
         _maybe_save_multiview(
             dataset="nuscenes",
             out_dir=out_dir,
@@ -2084,6 +2258,10 @@ def run_manual_benchmark(
             pts_np=pts_np,
             pred_boxes_np=pred_boxes_np,
             gt_boxes_np=gt_boxes_np,
+            pred_labels_np=pred_labels_np,
+            pred_scores_np=pred_scores_np,
+            gt_labels_np=gt_labels_np,
+            class_names=class_names,
         )
 
         # Only add to detection JSON if we have a valid sample_token
@@ -2117,10 +2295,12 @@ def run_manual_benchmark(
     # Filter predictions JSON to only processed samples if needed
     # This is necessary because the dataset might have fewer samples than the full validation set
     # The evaluator's __init__ checks that pred and GT tokens match
+    temp_res_path = None
+    temp_res_path_name = None
     if len(processed_tokens) > 0:
         filtered_tokens = set(processed_tokens)
         
-        # Load predictions JSON, filter it, and save back
+        # Load predictions JSON, filter it
         with open(res_path, 'r') as f:
             pred_data = json.load(f)
         
@@ -2130,14 +2310,16 @@ def run_manual_benchmark(
                 k: v for k, v in pred_data['results'].items()
                 if k in filtered_tokens
             }
-            pred_data['results'] = filtered_results
-            
-            # Save filtered predictions to a temporary file
-            import tempfile
-            temp_res_path = res_path.replace('.json', '_filtered.json')
-            with open(temp_res_path, 'w') as f:
-                json.dump(pred_data, f)
-            res_path = temp_res_path
+            # Only create temp file if filtering actually removed samples
+            if len(filtered_results) < len(pred_data['results']):
+                pred_data['results'] = filtered_results
+                # Use temporary file that will be cleaned up
+                import tempfile
+                temp_res_path = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, dir=out_dir)
+                json.dump(pred_data, temp_res_path)
+                temp_res_path_name = temp_res_path.name
+                temp_res_path.close()
+                res_path = temp_res_path_name
     
     # Create evaluator (with filtered predictions if applicable)
     # If we filtered predictions, we need to also filter GT to match
@@ -2205,6 +2387,13 @@ def run_manual_benchmark(
         f"\nNuScenes detection metrics: "
         f"NDS={metrics_summary.nd_score:.4f}, mAP={metrics_summary.mean_ap:.4f}"
     )
+
+    # Clean up temporary filtered file if it was created
+    if temp_res_path_name is not None and osp.exists(temp_res_path_name):
+        try:
+            os.unlink(temp_res_path_name)
+        except Exception:
+            pass
 
     # Save perf summary
     lats = np.array([m['lat'] for m in metrics], dtype=np.float32)
@@ -2369,6 +2558,13 @@ def run_manual_benchmark_v1(
                     # (G, 7) in LiDAR frame already
                     gt_boxes_np = gt_boxes
 
+                pred_labels_np = None
+                pred_scores_np = None
+                if pred is not None and pred.scores_3d.numel() > 0:
+                    keep = pred.scores_3d > score_thresh
+                    pred_labels_np = pred.labels_3d[keep].detach().cpu().numpy()
+                    pred_scores_np = pred.scores_3d[keep].detach().cpu().numpy()
+
                 draw_2d_multiview_from_tensor(
                     imgs_tensor=imgs,
                     meta=meta,
@@ -2378,6 +2574,10 @@ def run_manual_benchmark_v1(
                     gt_boxes=gt_boxes_np,
                     token=str(token),
                     out_dir=vis_dir,
+                    pred_labels=pred_labels_np,
+                    pred_scores=pred_scores_np,
+                    gt_labels=gt_labels,
+                    class_names=class_names,
                 )
 
         # ------------------------------------------------------------------
@@ -2530,6 +2730,10 @@ def run_manual_benchmark_v1(
                 gt_boxes=gt_boxes_np,
                 token=str(sample_token),
                 out_dir=vis_dir,
+                pred_labels=lbl,
+                pred_scores=sc,
+                gt_labels=gt_labels,
+                class_names=class_names,
             )
 
     # Save detection results
@@ -2667,6 +2871,8 @@ def inference_loop(model: torch.nn.Module,
 
         keep = scores > score_thresh
         pred_boxes = boxes[keep, :7] if keep.any() else None
+        pred_labels = pred.labels_3d[keep].detach().cpu().numpy() if keep.any() else None
+        pred_scores = scores[keep] if keep.any() else None
         max_conf = float(scores.max()) if scores.size > 0 else 0.0
 
         # Use true NuScenes sample_token (if available) for GT lookup
@@ -2675,6 +2881,13 @@ def inference_loop(model: torch.nn.Module,
             gt_boxes = get_gt_boxes(nusc, sample_token)
         else:
             gt_boxes = None
+
+        # Try to get class_names from model or pack
+        class_names = None
+        if hasattr(model, 'dataset_meta') and model.dataset_meta is not None:
+            class_names = model.dataset_meta.get('classes', None)
+        elif 'class_names' in pack:
+            class_names = pack['class_names']
 
         metrics["samples"].append({
             'id': str(token),
@@ -2701,18 +2914,36 @@ def inference_loop(model: torch.nn.Module,
                     gt_boxes=gt_boxes,
                     token=str(token),
                     out_dir=out_dir,
+                    pred_labels=pred_labels,
+                    pred_scores=pred_scores,
+                    class_names=class_names,
                 )
             elif paths and 'lidar2img' in meta:
                 # custom loader path: fall back to disk-based drawer
                 draw_2d_multiview(
                     paths, pts, meta['lidar2img'],
-                    pred_boxes, gt_boxes, str(token), out_dir
+                    pred_boxes, gt_boxes, str(token), out_dir,
+                    pred_labels=pred_labels,
+                    pred_scores=pred_scores,
+                    class_names=class_names
                 )
 
         if HAS_OPEN3D and (save_ply_if_headless or show_open3d):
             headless = os.environ.get('DISPLAY') is None
             if headless and save_ply_if_headless:
-                save_ply_files(out_dir, str(token), pts, pred_boxes, gt_boxes)
+                # Get class_names from model or pack
+                viz_class_names = None
+                if hasattr(model, 'dataset_meta') and model.dataset_meta is not None:
+                    viz_class_names = model.dataset_meta.get('classes', None)
+                elif 'class_names' in pack:
+                    viz_class_names = pack['class_names']
+                
+                save_ply_files(
+                    out_dir, str(token), pts, pred_boxes, gt_boxes,
+                    pred_labels=pred_labels,
+                    pred_scores=pred_scores,
+                    class_names=viz_class_names
+                )
             elif (not headless) and show_open3d:
                 run_open3d_viz(pts, pred_boxes, gt_boxes, window_name=f"Sample {token}")
                 
